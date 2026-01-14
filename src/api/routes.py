@@ -210,3 +210,132 @@ async def create_chat_completion(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/v1/chat/upload")
+async def create_chat_completion(
+    request: ChatCompletionRequest,
+    api_key: str = Depends(verify_api_key_header)
+):
+    """Create chat completion (unified endpoint for image and video generation)"""
+    try:
+        # Extract prompt from messages
+        if not request.messages:
+            raise HTTPException(status_code=400, detail="Messages cannot be empty")
+
+        last_message = request.messages[-1]
+        content = last_message.content
+
+        # Handle both string and array format (OpenAI multimodal)
+        prompt = ""
+        images: List[bytes] = []
+
+        if isinstance(content, str):
+            # Simple text format
+            prompt = content
+        elif isinstance(content, list):
+            # Multimodal format
+            for item in content:
+                if item.get("type") == "text":
+                    prompt = item.get("text", "")
+                elif item.get("type") == "image_url":
+                    # Extract base64 image
+                    image_url = item.get("image_url", {}).get("url", "")
+                    if image_url.startswith("data:image"):
+                        # Parse base64
+                        match = re.search(r"base64,(.+)", image_url)
+                        if match:
+                            image_base64 = match.group(1)
+                            image_bytes = base64.b64decode(image_base64)
+                            images.append(image_bytes)
+
+        # Fallback to deprecated image parameter
+        if request.image and not images:
+            if request.image.startswith("data:image"):
+                match = re.search(r"base64,(.+)", request.image)
+                if match:
+                    image_base64 = match.group(1)
+                    image_bytes = base64.b64decode(image_base64)
+                    images.append(image_bytes)
+
+        # 自动参考图：仅对图片模型生效
+        model_config = MODEL_CONFIG.get(request.model)
+
+        if model_config and model_config["type"] == "image" and not images and len(request.messages) > 1:
+            debug_logger.log_info(f"[CONTEXT] 开始查找历史参考图，消息数量: {len(request.messages)}")
+
+            # 如果当前请求没有上传图片，则尝试从历史记录中寻找最近的一张生成图
+            for msg in reversed(request.messages[:-1]):
+                if msg.role == "assistant" and isinstance(msg.content, str):
+                    # 匹配 Markdown 图片格式: ![...](http...)
+                    matches = re.findall(r"!\[.*?\]\((.*?)\)", msg.content)
+                    if matches:
+                        last_image_url = matches[-1]
+
+                        if last_image_url.startswith("http"):
+                            try:
+                                downloaded_bytes = await retrieve_image_data(last_image_url)
+                                if downloaded_bytes and len(downloaded_bytes) > 0:
+                                    images.append(downloaded_bytes)
+                                    debug_logger.log_info(f"[CONTEXT] ✅ 自动使用历史参考图: {last_image_url}")
+                                    break
+                                else:
+                                    debug_logger.log_warning(f"[CONTEXT] 图片下载失败或为空，尝试下一个: {last_image_url}")
+                            except Exception as e:
+                                debug_logger.log_error(f"[CONTEXT] 处理参考图时出错: {str(e)}")
+                                # 继续尝试下一个图片
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+        # Call generation handler
+        if request.stream:
+            # Streaming response
+            async def generate():
+                async for chunk in generation_handler.handle_generation(
+                    model=request.model,
+                    prompt=prompt,
+                    images=images if images else None,
+                    stream=True,
+                    upload_only=True
+                ):
+                    yield chunk
+
+                # Send [DONE] signal
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                generate(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no"
+                }
+            )
+        else:
+            # Non-streaming response
+            result = None
+            async for chunk in generation_handler.handle_generation(
+                model=request.model,
+                prompt=prompt,
+                images=images if images else None,
+                stream=False,
+                upload_only=True
+            ):
+                result = chunk
+
+            if result:
+                # Parse the result JSON string
+                try:
+                    result_json = json.loads(result)
+                    return JSONResponse(content=result_json)
+                except json.JSONDecodeError:
+                    # If not JSON, return as-is
+                    return JSONResponse(content={"result": result})
+            else:
+                raise HTTPException(status_code=500, detail="Generation failed: No response from handler")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

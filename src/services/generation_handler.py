@@ -226,7 +226,8 @@ class GenerationHandler:
         model: str,
         prompt: str,
         images: Optional[List[bytes]] = None,
-        stream: bool = False
+        stream: bool = False,
+        upload_only: bool = False
     ) -> AsyncGenerator:
         """统一生成入口
 
@@ -235,6 +236,7 @@ class GenerationHandler:
             prompt: 提示词
             images: 图片列表 (bytes格式)
             stream: 是否流式输出
+            upload_only: 是否只上传图片不生成
         """
         start_time = time.time()
         token = None
@@ -322,7 +324,7 @@ class GenerationHandler:
             if generation_type == "image":
                 debug_logger.log_info(f"[GENERATION] 开始图片生成流程...")
                 async for chunk in self._handle_image_generation(
-                    token, project_id, model_config, prompt, images, stream
+                    token, project_id, model_config, prompt, images, stream, upload_only
                 ):
                     yield chunk
             else:  # video
@@ -391,9 +393,14 @@ class GenerationHandler:
         model_config: dict,
         prompt: str,
         images: Optional[List[bytes]],
-        stream: bool
+        stream: bool,
+        upload_only: bool = False
     ) -> AsyncGenerator:
-        """处理图片生成 (同步返回)"""
+        """处理图片生成 (同步返回)
+        
+        Args:
+            upload_only: 如果为True，只上传图片并返回media_id，不进行实际生成
+        """
 
         # 获取并发槽位
         if self.concurrency_manager:
@@ -417,10 +424,24 @@ class GenerationHandler:
                     )
                     image_inputs.append({
                         "name": media_id,
+                        "media_id": media_id,
                         "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"
                     })
                     if stream:
                         yield self._create_stream_chunk(f"已上传第 {idx + 1}/{len(images)} 张图片\n")
+
+            # 如果只是上传模式，返回上传结果并提前退出
+            if upload_only:
+                if stream:
+                    yield self._create_stream_chunk(f"✅ 成功上传 {len(image_inputs)} 张图片\n", finish_reason="stop")
+                else:
+                    # 返回上传结果
+                    upload_result = {
+                        "uploaded": image_inputs,
+                        "count": len(image_inputs)
+                    }
+                    yield json.dumps(upload_result, ensure_ascii=False)
+                return
 
             # 调用生成API
             if stream:

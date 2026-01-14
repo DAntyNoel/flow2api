@@ -8,8 +8,8 @@ import asyncio
 
 # --- 配置区域 ---
 BASE_URL = os.getenv('GEMINI_FLOW2API_URL', 'http://127.0.0.1:8000')
-BACKEND_URL = BASE_URL + "/v1/chat/completions"
-API_KEY = os.getenv('GEMINI_FLOW2API_APIKEY', 'Bearer han1234')
+BACKEND_URL = BASE_URL + "/v1/chat/upload"
+API_KEY = os.getenv('GEMINI_FLOW2API_APIKEY', 'Bearer kanami')
 if API_KEY is None:
     raise ValueError('[gemini flow2api] api key not set')
 MODEL_LANDSCAPE = "gemini-3.0-pro-image-landscape"
@@ -131,10 +131,10 @@ if __name__ == '__main__':
         
         # 这里的 images 传空列表用于测试文生图
         # 如果想测试图生图，你需要手动读取本地文件：
-        # with open("output_test.jpg", "rb") as f: img_data = f.read()
-        # result = await request_backend_generation(user_prompt, [img_data])
+        with open("test.jpg", "rb") as f: img_data = f.read()
+        result = await request_backend_generation(user_prompt, [img_data])
         
-        result = await request_backend_generation(user_prompt)
+        # result = await request_backend_generation(user_prompt)
         
         if result:
             filename = "output_test.jpg"
