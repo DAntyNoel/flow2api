@@ -168,7 +168,8 @@ async def create_chat_completion(
                     model=request.model,
                     prompt=prompt,
                     images=images if images else None,
-                    stream=True
+                    stream=True,
+                    upload=request.upload
                 ):
                     yield chunk
 
@@ -191,7 +192,8 @@ async def create_chat_completion(
                 model=request.model,
                 prompt=prompt,
                 images=images if images else None,
-                stream=False
+                stream=False,
+                upload=request.upload
             ):
                 result = chunk
 

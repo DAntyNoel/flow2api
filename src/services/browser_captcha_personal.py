@@ -151,7 +151,7 @@ class BrowserCaptchaService:
                             document.head.appendChild(script);
                         }}
                     """)
-                    await page.wait_for_timeout(2000) 
+                    await page.wait_for_timeout(5000) 
 
                 token = await page.evaluate(f"""
                     async () => {{

@@ -9,6 +9,7 @@ from ..core.config import config
 from ..core.models import Task, RequestLog
 from .file_cache import FileCache
 
+UPLOAD_ONLY = True
 
 # Model configuration
 MODEL_CONFIG = {
@@ -226,7 +227,8 @@ class GenerationHandler:
         model: str,
         prompt: str,
         images: Optional[List[bytes]] = None,
-        stream: bool = False
+        stream: bool = False,
+        upload: bool = False,
     ) -> AsyncGenerator:
         """统一生成入口
 
@@ -236,6 +238,7 @@ class GenerationHandler:
             images: 图片列表 (bytes格式)
             stream: 是否流式输出
         """
+        print(f"[DEBUG] upload: {upload}")
         start_time = time.time()
         token = None
 
@@ -320,11 +323,18 @@ class GenerationHandler:
 
             # 5. 根据类型处理
             if generation_type == "image":
-                debug_logger.log_info(f"[GENERATION] 开始图片生成流程...")
-                async for chunk in self._handle_image_generation(
-                    token, project_id, model_config, prompt, images, stream
-                ):
-                    yield chunk
+                if upload:
+                    debug_logger.log_info(f"[GENERATION] 开始图片上传流程...")
+                    async for chunk in self._handle_image_upload(
+                        token, project_id, model_config, prompt, images, stream
+                    ):
+                        yield chunk
+                else:
+                    debug_logger.log_info(f"[GENERATION] 开始图片生成流程...")
+                    async for chunk in self._handle_image_generation(
+                        token, project_id, model_config, prompt, images, stream
+                    ):
+                        yield chunk
             else:  # video
                 debug_logger.log_info(f"[GENERATION] 开始视频生成流程...")
                 async for chunk in self._handle_video_generation(
@@ -384,6 +394,54 @@ class GenerationHandler:
         else:
             return "没有可用的Token进行视频生成。所有Token都处于禁用、冷却、配额耗尽或已过期状态。"
 
+    async def _handle_image_upload(
+        self,
+        token,
+        project_id: str,
+        model_config: dict,
+        prompt: str,
+        images: Optional[List[bytes]],
+        stream: bool
+    ) -> AsyncGenerator:
+        """处理图片生成 (同步返回)"""
+
+        # 获取并发槽位
+        if self.concurrency_manager:
+            if not await self.concurrency_manager.acquire_image(token.id):
+                yield self._create_error_response("图片并发限制已达上限")
+                return
+
+        try:
+            # 上传图片 (如果有)
+            image_inputs = []
+            if images and len(images) > 0:
+                if stream:
+                    yield self._create_stream_chunk(f"上传 {len(images)} 张参考图片...\n")
+
+                # 支持多图输入
+                for idx, image_bytes in enumerate(images):
+                    media_id = await self.flow_client.upload_image(
+                        token.at,
+                        image_bytes,
+                        model_config["aspect_ratio"]
+                    )
+                    image_inputs.append({
+                        "name": media_id,
+                        "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"
+                    })
+                    if stream:
+                        yield self._create_stream_chunk(f"已上传第 {idx + 1}/{len(images)} 张图片\n")
+
+            if True:
+                yield self._create_stream_chunk(f"上传了{len(images)}图片", finish_reason="stop")
+                yield self._create_error_response("-223")
+                return
+
+        finally:
+            # 释放并发槽位
+            if self.concurrency_manager:
+                await self.concurrency_manager.release_image(token.id)
+
     async def _handle_image_generation(
         self,
         token,
@@ -421,6 +479,11 @@ class GenerationHandler:
                     })
                     if stream:
                         yield self._create_stream_chunk(f"已上传第 {idx + 1}/{len(images)} 张图片\n")
+
+            # if UPLOAD_ONLY:
+            #     yield self._create_stream_chunk(f"上传了{len(images)}图片", finish_reason="stop")
+            #     yield self._create_error_response("-223")
+            #     return
 
             # 调用生成API
             if stream:

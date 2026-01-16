@@ -178,6 +178,7 @@ class ChatCompletionRequest(BaseModel):
     model: str
     messages: List[ChatMessage]
     stream: bool = False
+    upload: bool = False
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     # Flow2API specific parameters
